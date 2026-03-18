@@ -9,43 +9,43 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout source code
-      uses: actions/checkout@v4
+      - name: Checkout source code
+        uses: actions/checkout@v4
 
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ap-south-1
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-south-1
 
-    - name: Login to Amazon ECR
-      uses: aws-actions/amazon-ecr-login@v2
+      - name: Login to Amazon ECR (explicit)
+        run: |
+          REGISTRY=$(echo "${{ secrets.ECR_REPO_URL }}" | cut -d'/' -f1)
+          aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin "$REGISTRY"
 
-    - name: Build Docker image
-      run: |
-        docker build -t flask-app .
+      - name: Build Docker image
+        run: docker build -t fargate-simple-app .
 
-    - name: Tag Docker image
-      run: |
-        docker tag flask-app:latest ${{ secrets.ECR_REPO_URL }}:latest
+      - name: Tag Docker image
+        run: docker tag fargate-simple-app:latest ${{ secrets.ECR_REPO_URL }}:latest
 
-    - name: Push image to Amazon ECR
-      run: |
-        docker push ${{ secrets.ECR_REPO_URL }}:latest
+      - name: Push image to Amazon ECR
+        run: docker push ${{ secrets.ECR_REPO_URL }}:latest
 
-    - name: Render Amazon ECS task definition
-      id: task-def
-      uses: aws-actions/amazon-ecs-render-task-definition@v1
-      with:
-        task-definition: ecs-task-def.json
-        container-name: flask-container
-        image: ${{ secrets.ECR_REPO_URL }}:latest
+      - name: Render Amazon ECS task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: ecs-task-def.json
+          container-name: flask-container
+          image: ${{ secrets.ECR_REPO_URL }}:latest
 
-    - name: Deploy Amazon ECS task definition
-      uses: aws-actions/amazon-ecs-deploy-task-definition@v2
-      with:
-        task-definition: ${{ steps.task-def.outputs.task-definition }}
-        service: ${{ secrets.ECS_SERVICE_NAME }}
-        cluster: ${{ secrets.ECS_CLUSTER_NAME }}
-        wait-for-service-stability: true
+      - name: Deploy Amazon ECS task definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ secrets.ECS_SERVICE_NAME }}
+          cluster: ${{ secrets.ECS_CLUSTER_NAME }}
+          wait-for-service-stability: true
+``
