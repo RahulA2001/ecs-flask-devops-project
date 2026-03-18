@@ -1,8 +1,13 @@
-name: Deploy to ECS Fargate
+name: Deploy to ECS (versioned)
 
 on:
   push:
     branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Optional: deploy a specific existing image tag (for rollback). Example: 3a1b2c4"
+        required: false
 
 jobs:
   deploy:
@@ -19,29 +24,42 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-south-1
 
+      - name: Compute image tag
+        id: vars
+        run: |
+          if [ -n "${{ github.event.inputs.image_tag }}" ]; then
+            echo "IMAGE_TAG=${{ github.event.inputs.image_tag }}" >> $GITHUB_ENV
+          else
+            echo "IMAGE_TAG=${GITHUB_SHA::7}" >> $GITHUB_ENV
+          fi
+
       - name: Login to Amazon ECR (explicit)
         run: |
           REGISTRY=$(echo "${{ secrets.ECR_REPO_URL }}" | cut -d'/' -f1)
           aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin "$REGISTRY"
 
       - name: Build Docker image
-        run: docker build -t fargate-simple-app .
+        run: docker build -t ecs-app .
 
-      - name: Tag Docker image
-        run: docker tag fargate-simple-app:latest ${{ secrets.ECR_REPO_URL }}:latest
+      - name: Tag Docker image (version + latest)
+        run: |
+          docker tag ecs-app:latest ${{ secrets.ECR_REPO_URL }}:${{ env.IMAGE_TAG }}
+          docker tag ecs-app:latest ${{ secrets.ECR_REPO_URL }}:latest
 
-      - name: Push image to Amazon ECR
-        run: docker push ${{ secrets.ECR_REPO_URL }}:latest
+      - name: Push images to Amazon ECR
+        run: |
+          docker push ${{ secrets.ECR_REPO_URL }}:${{ env.IMAGE_TAG }}
+          docker push ${{ secrets.ECR_REPO_URL }}:latest
 
-      - name: Render Amazon ECS task definition
+      - name: Render Amazon ECS task definition (deploy version tag)
         id: task-def
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
           task-definition: ecs-task-def.json
           container-name: ecs-lab
-          image: ${{ secrets.ECR_REPO_URL }}:latest
+          image: ${{ secrets.ECR_REPO_URL }}:${{ env.IMAGE_TAG }}
 
-      - name: Deploy Amazon ECS task definition
+      - name: Deploy Amazon ECS task definition (rolling)
         uses: aws-actions/amazon-ecs-deploy-task-definition@v2
         with:
           task-definition: ${{ steps.task-def.outputs.task-definition }}
