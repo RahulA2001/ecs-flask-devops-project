@@ -1,4 +1,4 @@
-name: Deploy to ECS (versioned)
+name: Deploy to ECS (OIDC + versioned)
 
 on:
   push:
@@ -6,8 +6,12 @@ on:
   workflow_dispatch:
     inputs:
       image_tag:
-        description: "Optional: deploy a specific existing image tag (for rollback). Example: 3a1b2c4"
+        description: "Optional: deploy a specific existing image tag (for rollback). Example: 84c1a7b"
         required: false
+
+permissions:
+  id-token: write
+  contents: read
 
 jobs:
   deploy:
@@ -17,15 +21,16 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ap-south-1
 
+      - name: Who am I (AWS identity)
+        run: aws sts get-caller-identity
+
       - name: Compute image tag
-        id: vars
         run: |
           if [ -n "${{ github.event.inputs.image_tag }}" ]; then
             echo "IMAGE_TAG=${{ github.event.inputs.image_tag }}" >> $GITHUB_ENV
