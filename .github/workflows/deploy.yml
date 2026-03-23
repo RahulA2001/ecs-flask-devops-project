@@ -1,4 +1,4 @@
-name: Deploy to ECS (OIDC + versioned)
+name: Deploy to ECS (OIDC + versioned + BlueGreen switch)
 
 on:
   push:
@@ -8,6 +8,10 @@ on:
       image_tag:
         description: "Optional: deploy a specific existing image tag (for rollback). Example: 84c1a7b"
         required: false
+      cutover_to_green:
+        description: "Shift ALB traffic to GREEN after deploy? (true/false)"
+        required: false
+        default: "true"
 
 permissions:
   id-token: write
@@ -64,10 +68,64 @@ jobs:
           container-name: ecs-lab
           image: ${{ secrets.ECR_REPO_URL }}:${{ env.IMAGE_TAG }}
 
-      - name: Deploy Amazon ECS task definition (rolling)
+      - name: Deploy Amazon ECS task definition (rolling) - GREEN service
         uses: aws-actions/amazon-ecs-deploy-task-definition@v2
         with:
           task-definition: ${{ steps.task-def.outputs.task-definition }}
           service: ${{ secrets.ECS_SERVICE_NAME }}
           cluster: ${{ secrets.ECS_CLUSTER_NAME }}
           wait-for-service-stability: true
+
+      # ----------------------------
+      # Blue/Green Traffic Switching
+      # ----------------------------
+
+      - name: Decide cutover flag
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "CUTOVER=true" >> $GITHUB_ENV
+          else
+            echo "CUTOVER=${{ github.event.inputs.cutover_to_green }}" >> $GITHUB_ENV
+          fi
+
+      - name: Wait until GREEN targets are healthy (safety gate)
+        if: env.CUTOVER == 'true'
+        run: |
+          echo "Waiting for GREEN target group to become healthy..."
+          for i in {1..30}; do
+            STATES=$(aws elbv2 describe-target-health \
+              --target-group-arn "${{ secrets.GREEN_TG_ARN }}" \
+              --query 'TargetHealthDescriptions[*].TargetHealth.State' \
+              --output text)
+
+            echo "Attempt $i: GREEN target states = $STATES"
+
+            # pass if we see at least one healthy and no unhealthy
+            if echo "$STATES" | grep -q "healthy" && ! echo "$STATES" | grep -q "unhealthy"; then
+              echo "GREEN targets are healthy ✅"
+              exit 0
+            fi
+
+            sleep 10
+          done
+
+          echo "GREEN targets did not become healthy in time ❌"
+          exit 1
+
+      - name: Shift traffic 100% to GREEN target group
+        if: env.CUTOVER == 'true'
+        run: |
+          echo "Shifting ALB listener traffic to GREEN..."
+          aws elbv2 modify-listener \
+            --listener-arn "${{ secrets.ALB_LISTENER_ARN }}" \
+            --default-actions Type=forward,TargetGroupArn="${{ secrets.GREEN_TG_ARN }}"
+          echo "Traffic shifted to GREEN ✅"
+
+      - name: Rollback traffic to BLUE if anything fails
+        if: failure()
+        run: |
+          echo "Deployment failed. Rolling back traffic to BLUE..."
+          aws elbv2 modify-listener \
+            --listener-arn "${{ secrets.ALB_LISTENER_ARN }}" \
+            --default-actions Type=forward,TargetGroupArn="${{ secrets.BLUE_TG_ARN }}"
+          echo "Rollback to BLUE completed ✅"
